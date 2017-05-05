@@ -1,7 +1,6 @@
 require 'sinatra'
 require 'json'
 require 'pry'
-#XML ROUTE
 require 'gyoku'
 
 users = {
@@ -9,6 +8,8 @@ users = {
   'simon': {first_name: 'Simon', last_name: 'Random', age: 26},
   'john': {first_name: 'John', last_name: 'Smith', age: 28}
 }
+
+deleted_users = {}
 
 helpers do
   def json_or_default?(type)
@@ -25,7 +26,7 @@ helpers do
       return 'json' if json_or_default?(mt)
       return 'xml' if xml?(mt)
     end
-    halt 406, 'Not Acceptable'
+    'json'
   end
 
   def type
@@ -49,13 +50,20 @@ end
 
 get '/users' do
   send_data(json: -> {users.map {|name, data| data.merge(id: name)}},
-            xml:  -> {{users: users}})
+  xml:  -> {{users: users}})
+end
 
+[:put, :patch, :delete].each do |method|
+  send(method, '/users') do
+    halt 405
+  end
 end
 
 get '/users/:first_name' do |first_name|
+  halt 410 if deleted_users[first_name.to_sym]
+  halt 404 unless users[first_name.to_sym]
   send_data(json: -> { users[first_name.to_sym].merge(id: first_name)},
-            xml: -> { { first_name => users[first_name.to_sym]}})
+  xml: -> { { first_name => users[first_name.to_sym]}})
 end
 
 head '/users' do
@@ -63,36 +71,60 @@ head '/users' do
 end
 
 post '/users' do
-  user = JSON.parse(request.body.read)
+  halt 415 unless request.env['CONTENT_TYPE'] == 'application/json'
+  begin
+    user = JSON.parse(request.body.read)
+  rescue JSON::ParserError => e
+    halt 400, send_data(json: -> { {message: e.to_s}},
+    xml: -> {{message: e.to_s}})
+  end
+  if users[user['first_name'].downcase.to_sym]
+    message = {message: "User #{user['first_name']} already in DB."}
+    halt 409, send_data(json: -> {message},
+    xml: -> {message})
+  end
   users[user['first_name'].downcase.to_sym] = user
-
   url = "http://localhost:4567/users/#{user['first_name']}"
   response.headers['Location'] = url
-
   status 201
 end
 
-
 put '/users/:first_name' do |first_name|
-  user = JSON.parse(request.body.read)
+  halt 415 unless request.env['CONTENT_TYPE'] == 'application/json'
+  begin
+    user = JSON.parse(request.body.read)
+  rescue JSON::ParserError => e
+    halt 400, send_data(json: -> {{message: e.to_s}},
+    xml: -> {message})
+  end
   existing = users[first_name.to_sym]
   users[first_name.to_sym] = user
   status existing ? 204 : 201
 end
 
 patch '/users/:first_name' do |first_name|
+  halt 415 unless request.env['CONTENT_TYPE'] == 'application/json'
+  halt 410 if deleted_users[first_name.to_sym]
+  halt 404 unless users[first_name.to_sym]
   type = accepted_media_type
-  user_client = JSON.parse(request.body.read)
+  begin
+    user_client = JSON.parse(request.body.read)
+  rescue JSON::ParserError => e
+    halt 400, send_data(json: -> {{message: e.to_s}},
+    xml: -> {message})
+  end
   user_server = users[first_name.to_sym]
   user_client.each do |key, value|
     user_server[key.to_sym] = value
   end
   send_data(json: -> {user_server.merge(id: first_name)},
-            xml: -> {{first_name => user_server}} )
+  xml: -> {{first_name => user_server}} )
 end
 
 delete '/users/:first_name' do |first_name|
-  users.delete(first_name.to_sym)
+  first_name = first_name.to_sym
+  deleted_users[first_name] = users[first_name] if users[first_name]
+  users.delete(first_name)
   status 204
 end
 
